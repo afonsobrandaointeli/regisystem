@@ -1,12 +1,50 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
+import json
+import os
+import base64
+from dotenv import load_dotenv
 
-# Inicializa o Firebase apenas uma vez
+# ----------------------------------------------------
+# Carrega variáveis do .env (incluindo FIREBASE_CREDENTIALS_BASE64)
+# ----------------------------------------------------
+load_dotenv()  # carrega as variáveis definidas em .env
+
+# ----------------------------------------------------
+# Inicialização do Firebase (apenas uma vez)
+# ----------------------------------------------------
 @st.cache_resource
 def init_firestore():
-    cred = credentials.Certificate("jey.json")
-    firebase_admin.initialize_app(cred)
+    # 1) Recupera a string Base64 das credenciais
+    base64_str = os.getenv("FIREBASE_CREDENTIALS_BASE64")
+    if not base64_str:
+        st.error("A variável FIREBASE_CREDENTIALS_BASE64 não está definida no .env.")
+        st.stop()
+
+    # 2) Decodifica Base64 para bytes
+    try:
+        json_bytes = base64.b64decode(base64_str)
+    except Exception as e:
+        st.error(f"Erro ao decodificar Base64: {e}")
+        st.stop()
+
+    # 3) Converte bytes para string JSON e carrega em dicionário
+    try:
+        firebase_config = json.loads(json_bytes.decode("utf-8"))
+    except json.JSONDecodeError:
+        st.error("Erro ao converter os bytes decodificados em JSON. Verifique FIREBASE_CREDENTIALS_BASE64.")
+        st.stop()
+
+    # 4) Inicializa apenas se ainda não houver um app criado
+    if not firebase_admin._apps:
+        try:
+            cred = credentials.Certificate(firebase_config)
+            firebase_admin.initialize_app(cred)
+        except Exception as e:
+            st.error(f"Falha ao inicializar o Firebase: {e}")
+            st.stop()
+
     return firestore.client()
 
 db = init_firestore()
@@ -71,9 +109,8 @@ if st.button("Buscar"):
 
 # 3) Exibir formulário de cadastro se buscou por RA e não encontrou
 if "AlunoEncontrado" in st.session_state and st.session_state["AlunoEncontrado"] is False:
-    # Sessão criada quando buscou por RA inexistente
-    if st.session_state.get("RA_Encontrado"):
-        ra_para_cadastro = st.session_state["RA_Encontrado"]
+    ra_para_cadastro = st.session_state.get("RA_Encontrado")
+    if ra_para_cadastro:
         st.subheader("Cadastrar Novo Aluno")
         st.info(f"RA informado para cadastro: {ra_para_cadastro}")
         nome_novo = st.text_input("Nome completo do aluno para cadastrar este RA:", key="nome_novo_cad")

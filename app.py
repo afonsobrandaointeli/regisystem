@@ -5,20 +5,52 @@ import pandas as pd
 import plotly.graph_objects as go
 import json
 import os
+import base64
+from dotenv import load_dotenv
 
-# ----------------------------------------
-# 1. Inicialização do Firebase (Firestore)
-# ----------------------------------------
+# ----------------------------------------------------
+# 1. Carregar variáveis de ambiente
+# ----------------------------------------------------
+load_dotenv()  # Lê o arquivo .env e adiciona as variáveis em os.environ :contentReference[oaicite:8]{index=8}
+
+# ----------------------------------------------------
+# 2. Inicialização do Firebase (Firestore) via Base64
+# ----------------------------------------------------
 @st.cache_resource
 def init_firestore():
-    cred = credentials.Certificate("jey.json")
-    firebase_admin.initialize_app(cred)
+    # 2.1. Recupera a string Base64 do .env
+    base64_str = os.getenv("FIREBASE_CREDENTIALS_BASE64")
+    if not base64_str:
+        st.error("A variável FIREBASE_CREDENTIALS_BASE64 não está definida no .env.")
+        st.stop()
+
+    # 2.2. Decodifica Base64 para bytes e, em seguida, para string JSON
+    try:
+        json_bytes = base64.b64decode(base64_str)
+    except Exception as e:
+        st.error(f"Erro ao decodificar Base64: {e}")
+        st.stop()
+
+    try:
+        firebase_config = json.loads(json_bytes.decode("utf-8"))
+    except json.JSONDecodeError:
+        st.error("Erro ao converter os bytes decodificados em JSON. Verifique o conteúdo de FIREBASE_CREDENTIALS_BASE64.")
+        st.stop()
+
+    # 2.3. Inicializa o Firebase Admin SDK usando o dicionário JSON reconstruído
+    try:
+        cred = credentials.Certificate(firebase_config)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"Falha ao inicializar o Firebase: {e}")
+        st.stop()
+
     return firestore.client()
 
-db = init_firestore()
+db = init_firestore()  # Agora 'db' é o cliente Firestore autenticado :contentReference[oaicite:9]{index=9}
 
 # ----------------------------------------
-# 2. Carregamento dos códigos de trimestres
+# 3. Carregamento dos códigos de trimestres
 # ----------------------------------------
 @st.cache_data
 def carregar_codigos_trimestres():
@@ -40,7 +72,7 @@ if not todos_codigos:
     st.stop()
 
 # ----------------------------------------
-# 3. Obter lista de alunos (Nome + RA) para dropdown
+# 4. Obter lista de alunos (Nome + RA) para dropdown
 # ----------------------------------------
 @st.cache_data
 def obter_lista_alunos():
@@ -59,14 +91,14 @@ if not alunos_dict:
     st.stop()
 
 # ----------------------------------------
-# 4. Interface de Seleção de Aluno
+# 5. Interface de Seleção de Aluno
 # ----------------------------------------
 st.title("Relatório de Evolução Trimestral por Aluno")
 selecionado = st.selectbox("Selecione o aluno pelo nome:", list(alunos_dict.keys()))
 ra_selecionado = alunos_dict[selecionado]
 
 # ----------------------------------------
-# 5. Carregar dados do aluno selecionado
+# 6. Carregar dados do aluno selecionado
 # ----------------------------------------
 doc_ref = db.collection("alunos").document(ra_selecionado)
 doc = doc_ref.get()
@@ -87,9 +119,8 @@ if not trimestres_map:
 trimestres_ordenados = sorted(trimestres_map.items(), key=lambda x: x[0])
 
 # ----------------------------------------
-# 6. Preparar DataFrame para gráfico de linha de cada atributo
+# 7. Preparar dados para gráficos
 # ----------------------------------------
-# Lista fixa de métricas, seguindo a ordem esperada
 listas_metricas = [
     "Business Drivers",
     "Funcionalidade",
@@ -98,30 +129,25 @@ listas_metricas = [
     "Tecnologia"
 ]
 
-# Construir um dicionário cujas chaves são as métricas e valores serão listas na ordem dos trimestres
 dados_por_met = {met: [] for met in listas_metricas}
-lista_trimestres = []  # lista de códigos
+lista_trimestres = []
 
 for codigo, notas in trimestres_ordenados:
     lista_trimestres.append(codigo)
     for met in listas_metricas:
-        # Se por acaso o campo não existir, assume 0
         dados_por_met[met].append(notas.get(met, 0))
 
 # ----------------------------------------
-# 7. Construir Gráfico de Radar com Plotly (primeiro)
+# 8. Construir Gráfico de Radar (primeiro)
 # ----------------------------------------
 st.header("Gráfico de Radar da Evolução")
 
-# Para destacar o último trimestre, definimos:
 ultimo_codigo, notas_ultimo = trimestres_ordenados[-1]
-# Valores do último trimestre
 valores_ultimo = [notas_ultimo.get(m, 0) for m in listas_metricas]
 
-# Monta o gráfico polar
 fig_radar = go.Figure()
 
-# Primeiro, traça os trimestres anteriores com baixa opacidade
+# Traça trimestres antigos com opacidade reduzida
 for codigo, notas in trimestres_ordenados[:-1]:
     valores = [notas.get(m, 0) for m in listas_metricas]
     fig_radar.add_trace(go.Scatterpolar(
@@ -129,21 +155,20 @@ for codigo, notas in trimestres_ordenados[:-1]:
         theta=listas_metricas + [listas_metricas[0]],
         name=codigo,
         fill='toself',
-        opacity=0.3,              # menor opacidade para trimestres antigos
-        line=dict(width=1),       # linha fina
+        opacity=0.3,
+        line=dict(width=1),
     ))
 
-# Agora, traça o último trimestre com destaque (opacidade total e linha mais grossa)
+# Traça o último trimestre com destaque
 fig_radar.add_trace(go.Scatterpolar(
     r=valores_ultimo + [valores_ultimo[0]],
     theta=listas_metricas + [listas_metricas[0]],
     name=f"{ultimo_codigo} (Último)",
     fill='toself',
-    opacity=0.9,                # quase opaco para destacar
-    line=dict(width=3, color='red'),  # linha grossa e em vermelho para fácil visualização
+    opacity=0.9,
+    line=dict(width=3, color='red'),
 ))
 
-# Configurações do layout
 fig_radar.update_layout(
     polar=dict(
         radialaxis=dict(visible=True, range=[0, 10])
@@ -153,18 +178,16 @@ fig_radar.update_layout(
     title_text="Radar da Evolução Trimestral (último trimestre em destaque)"
 )
 
-# Exibe o gráfico de radar
 st.plotly_chart(fig_radar, use_container_width=True)
 
 # ----------------------------------------
-# 8. Exibir 5 Gráficos de Linha, um para cada métrica (com rótulos rotacionados)
+# 9. Exibir 5 Gráficos de Linha (rótulos a 45°)
 # ----------------------------------------
 st.header("Gráficos de Linha por Atributo")
 
 for met in listas_metricas:
     st.subheader(f"{met} ao longo dos trimestres")
 
-    # Cria um Scatter do Plotly para a métrica atual
     fig_linha = go.Figure(
         data=go.Scatter(
             x=lista_trimestres,
@@ -176,10 +199,9 @@ for met in listas_metricas:
         )
     )
 
-    # Ajusta layout para rotacionar os rótulos do eixo X em 45 graus
     fig_linha.update_layout(
         xaxis=dict(
-            tickangle=45,
+            tickangle=45,              # Rótulos do eixo X rotacionados a 45° :contentReference[oaicite:10]{index=10}
             tickfont=dict(size=10),
             automargin=True
         ),
@@ -192,5 +214,4 @@ for met in listas_metricas:
         showlegend=False
     )
 
-    # Exibe o gráfico usando Plotly
     st.plotly_chart(fig_linha, use_container_width=True)
