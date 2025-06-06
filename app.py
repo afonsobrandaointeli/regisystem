@@ -1,201 +1,269 @@
 import streamlit as st
+st.set_page_config(page_title="Sistema de Notas", layout="wide")  # PRIMEIRA INSTRUÇÃO
 
-st.set_page_config(page_title="Relatório Trimestral", layout="wide")
-
-# ---- Demais imports ----
 import firebase_admin
 from firebase_admin import credentials, firestore
-import pandas as pd
-import plotly.graph_objects as go
 import json
 import os
 import base64
 from dotenv import load_dotenv
-
+import plotly.graph_objects as go
 
 # ----------------------------------------------------
-# 1. Carregar variáveis de ambiente
+# Inicialização Firebase
 # ----------------------------------------------------
 load_dotenv()
-
-# ----------------------------------------------------
-# 2. Inicialização do Firebase (Firestore) via Base64
-# ----------------------------------------------------
 @st.cache_resource
 def init_firestore():
     base64_str = os.getenv("FIREBASE_CREDENTIALS_BASE64")
     if not base64_str:
-        st.error("A variável FIREBASE_CREDENTIALS_BASE64 não está definida no .env.")
+        st.error("Variável FIREBASE_CREDENTIALS_BASE64 não definida.")
         st.stop()
-
     try:
         json_bytes = base64.b64decode(base64_str)
         firebase_config = json.loads(json_bytes.decode("utf-8"))
     except Exception as e:
-        st.error(f"Erro ao processar as credenciais do Firebase: {e}")
+        st.error(f"Erro ao decodificar credenciais: {e}")
         st.stop()
-
-    try:
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(firebase_config)
-            firebase_admin.initialize_app(cred)
-    except Exception as e:
-        st.error(f"Falha ao inicializar o Firebase: {e}")
-        st.stop()
-
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(firebase_config)
+        firebase_admin.initialize_app(cred)
     return firestore.client()
 
 db = init_firestore()
 
-# ----------------------------------------------------
-# 3. Carregamento dos códigos de trimestres
-# ----------------------------------------------------
-@st.cache_data
-def carregar_codigos_trimestres():
-    caminho = os.path.join(os.getcwd(), "turmas.json")
-    try:
-        with open(caminho, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-            return dados.get("codigos_trimestres", [])
-    except FileNotFoundError:
-        st.error(f"Arquivo 'turmas.json' não encontrado em: {caminho}")
-        return []
-    except json.JSONDecodeError:
-        st.error("Erro ao decodificar 'turmas.json'. Verifique o formato JSON.")
-        return []
-
-todos_codigos = carregar_codigos_trimestres()
-if not todos_codigos:
-    st.warning("Nenhum código de trimestre foi carregado de 'turmas.json'.")
-    st.stop()
-
-# ----------------------------------------------------
-# 4. Obter lista de alunos (Nome + RA) para dropdown
-# ----------------------------------------------------
 @st.cache_data
 def obter_lista_alunos():
-    alunos_stream = db.collection("alunos").stream()
-    mapeamento = {}
-    for doc in alunos_stream:
-        dados = doc.to_dict()
-        nome = dados.get("nome", "")
-        ra = doc.id
-        mapeamento[f"{nome} (RA: {ra})"] = ra
-    return mapeamento
+    alunos = db.collection("alunos").stream()
+    return {f"{doc.to_dict().get('nome')} (RA: {doc.id})": doc.id for doc in alunos}
 
-alunos_dict = obter_lista_alunos()
-if not alunos_dict:
-    st.warning("Não há nenhum aluno cadastrado no Firestore.")
-    st.stop()
+@st.cache_data
+def carregar_codigos_trimestres():
+    try:
+        with open("turmas.json", "r", encoding="utf-8") as f:
+            return json.load(f).get("codigos_trimestres", [])
+    except:
+        return []
 
 # ----------------------------------------------------
-# 5. Interface de Seleção de Aluno
+# Navegação
 # ----------------------------------------------------
-st.title("📊 Relatório de Evolução Trimestral por Aluno")
-selecionado = st.selectbox("Selecione o aluno pelo nome:", list(alunos_dict.keys()))
-ra_selecionado = alunos_dict[selecionado]
+aba = st.sidebar.radio("Escolha a funcionalidade:", ["Cadastrar Notas", "Editar Notas", "Buscar/Editar Aluno", "Relatório"])
 
 # ----------------------------------------------------
-# 6. Carregar dados do aluno selecionado
+# Aba: Cadastrar Notas
 # ----------------------------------------------------
-doc_ref = db.collection("alunos").document(ra_selecionado)
-doc = doc_ref.get()
-if not doc.exists:
-    st.error("Documento do aluno não encontrado no Firestore.")
-    st.stop()
+if aba == "Cadastrar Notas":
+    st.title("📥 Cadastrar Notas")
+    alunos_dict = obter_lista_alunos()
+    codigos = carregar_codigos_trimestres()
 
-dados_aluno = doc.to_dict()
-st.markdown(f"**Aluno:** {dados_aluno.get('nome')}  \n**RA:** {ra_selecionado}")
+    if not alunos_dict or not codigos:
+        st.warning("Dados ausentes.")
+        st.stop()
 
-trimestres_map = dados_aluno.get("trimestres", {})
-if not trimestres_map:
-    st.info("Este aluno ainda não possui notas cadastradas em nenhum trimestre.")
-    st.stop()
+    aluno_sel = st.selectbox("Selecione o aluno:", list(alunos_dict.keys()), key="cadastro_aluno")
+    ra = alunos_dict[aluno_sel]
+    doc = db.collection("alunos").document(ra).get()
+    dados = doc.to_dict() or {}
+    existentes = dados.get("trimestres", {}).keys()
+    disponiveis = [c for c in codigos if c not in existentes]
 
-trimestres_ordenados = sorted(trimestres_map.items(), key=lambda x: x[0])
+    if not disponiveis:
+        st.info("Todos os trimestres já estão cadastrados.")
+        st.stop()
+
+    cod = st.selectbox("Trimestre:", disponiveis, key="trimestre_cadastro")
+    bd = st.slider("Business Drivers", 0, 10, 0, key="bd_cad")
+    func = st.slider("Funcionalidade", 0, 10, 0, key="func_cad")
+    rnf = st.slider("Req Não Funcionais", 0, 10, 0, key="rnf_cad")
+    eng = st.slider("Engenharia", 0, 10, 0, key="eng_cad")
+    tec = st.slider("Tecnologia", 0, 10, 0, key="tec_cad")
+
+    if st.button("Salvar", key="btn_cad"):
+        db.collection("alunos").document(ra).set({
+            "trimestres": {
+                cod: {
+                    "Business Drivers": bd,
+                    "Funcionalidade": func,
+                    "Req Não Funcionais": rnf,
+                    "Engenharia": eng,
+                    "Tecnologia": tec
+                }
+            }
+        }, merge=True)
+        st.success("Notas cadastradas!")
+        st.rerun()
 
 # ----------------------------------------------------
-# 7. Preparar dados para gráficos
+# Aba: Editar Notas
 # ----------------------------------------------------
-listas_metricas = [
-    "Business Drivers",
-    "Funcionalidade",
-    "Req Não Funcionais",
-    "Engenharia",
-    "Tecnologia"
-]
+elif aba == "Editar Notas":
+    st.title("✏️ Editar Notas")
+    alunos_dict = obter_lista_alunos()
+    if not alunos_dict:
+        st.warning("Nenhum aluno encontrado.")
+        st.stop()
 
-dados_por_met = {met: [] for met in listas_metricas}
-lista_trimestres = []
+    aluno_sel = st.selectbox("Selecione o aluno:", list(alunos_dict.keys()), key="editar_aluno")
+    ra = alunos_dict[aluno_sel]
+    doc = db.collection("alunos").document(ra).get()
+    dados = doc.to_dict() or {}
+    trimestres = dados.get("trimestres", {})
+    if not trimestres:
+        st.info("Sem notas para editar.")
+        st.stop()
 
-for codigo, notas in trimestres_ordenados:
-    lista_trimestres.append(codigo)
-    for met in listas_metricas:
-        dados_por_met[met].append(notas.get(met, 0))
+    cod = st.selectbox("Trimestre:", sorted(trimestres.keys()), key="editar_cod")
+    notas = trimestres.get(cod, {})
+    bd = st.slider("Business Drivers", 0, 10, notas.get("Business Drivers", 0), key="bd_edit")
+    func = st.slider("Funcionalidade", 0, 10, notas.get("Funcionalidade", 0), key="func_edit")
+    rnf = st.slider("Req Não Funcionais", 0, 10, notas.get("Req Não Funcionais", 0), key="rnf_edit")
+    eng = st.slider("Engenharia", 0, 10, notas.get("Engenharia", 0), key="eng_edit")
+    tec = st.slider("Tecnologia", 0, 10, notas.get("Tecnologia", 0), key="tec_edit")
+
+    if st.button("Atualizar", key="btn_edit"):
+        db.collection("alunos").document(ra).update({
+            f"trimestres.{cod}": {
+                "Business Drivers": bd,
+                "Funcionalidade": func,
+                "Req Não Funcionais": rnf,
+                "Engenharia": eng,
+                "Tecnologia": tec
+            }
+        })
+        st.success("Notas atualizadas!")
+        st.rerun()
 
 # ----------------------------------------------------
-# 8. Construir Gráfico de Radar
+# Aba: Buscar/Editar Aluno
 # ----------------------------------------------------
-st.header("📌 Gráfico de Radar da Evolução")
+elif aba == "Buscar/Editar Aluno":
+    st.title("🔍 Buscar ou Editar Aluno")
+    col1, col2 = st.columns(2)
+    with col1:
+        ra_input = st.text_input("RA do aluno:", key="ra_busca")
+    with col2:
+        nome_input = st.text_input("Nome do aluno:", key="nome_busca")
 
-ultimo_codigo, notas_ultimo = trimestres_ordenados[-1]
-valores_ultimo = [notas_ultimo.get(m, 0) for m in listas_metricas]
+    aluno_encontrado = False
+    ra_local = None
+    dados_aluno = None
 
-fig_radar = go.Figure()
+    if st.button("Buscar", key="btn_busca"):
+        ra = ra_input.strip()
+        nome = nome_input.strip()
+        if ra:
+            doc_ref = db.collection("alunos").document(ra)
+            doc = doc_ref.get()
+            if doc.exists:
+                dados_aluno = doc.to_dict()
+                ra_local = ra
+                aluno_encontrado = True
+                st.success(f"Aluno encontrado: {dados_aluno.get('nome')} (RA: {ra})")
+            else:
+                st.info(f"Nenhum aluno com RA {ra}. Preencha abaixo para cadastrar.")
+                ra_local = ra
+        elif nome:
+            consulta = db.collection("alunos").where("nome", "==", nome).get()
+            if len(consulta) == 1:
+                doc = consulta[0]
+                dados_aluno = doc.to_dict()
+                ra_local = doc.id
+                aluno_encontrado = True
+                st.success(f"Aluno encontrado: {dados_aluno.get('nome')} (RA: {ra_local})")
+            elif len(consulta) > 1:
+                opcoes = {f"{doc.to_dict().get('nome')} (RA: {doc.id})": doc.id for doc in consulta}
+                escolhido = st.selectbox("Vários alunos encontrados. Selecione:", list(opcoes.keys()), key="selec_duplicado")
+                if st.button("Selecionar", key="btn_select_multi"):
+                    ra_local = opcoes[escolhido]
+                    doc = db.collection("alunos").document(ra_local).get()
+                    dados_aluno = doc.to_dict()
+                    aluno_encontrado = True
+                    st.success(f"Aluno selecionado: {dados_aluno.get('nome')} (RA: {ra_local})")
+            else:
+                st.info("Nome não encontrado. Preencha abaixo para cadastrar.")
 
-for codigo, notas in trimestres_ordenados[:-1]:
-    valores = [notas.get(m, 0) for m in listas_metricas]
-    fig_radar.add_trace(go.Scatterpolar(
-        r=valores + [valores[0]],
-        theta=listas_metricas + [listas_metricas[0]],
-        name=codigo,
+    if "aluno_cadastrado_msg" in st.session_state:
+            st.success(st.session_state["aluno_cadastrado_msg"])
+            del st.session_state["aluno_cadastrado_msg"]
+            
+    # Cadastro de novo aluno
+    if not aluno_encontrado and ra_input:
+        st.subheader("📋 Cadastrar Novo Aluno")
+        nome_novo = st.text_input("Nome completo do novo aluno:", key="nome_novo_cad")
+        if st.button("Cadastrar Aluno", key="btn_cadastrar_aluno"):
+            if not nome_novo.strip():
+                st.error("Nome não pode estar vazio.")
+            else:
+                db.collection("alunos").document(ra_input.strip()).set({
+                    "nome": nome_novo.strip(),
+                    "ra": ra_input.strip()
+                })
+                obter_lista_alunos.clear()
+                st.session_state["aluno_cadastrado_msg"] = f"Aluno '{nome_novo}' cadastrado com sucesso!"
+                st.rerun()
+
+    # Edição de nome de aluno existente
+    if aluno_encontrado and dados_aluno and ra_local:
+        st.subheader("✏️ Editar Nome do Aluno")
+        nome_atual = dados_aluno.get("nome", "")
+        novo_nome = st.text_input("Novo nome:", value=nome_atual, key="editar_nome")
+        if st.button("Salvar Alterações", key="btn_salvar_nome"):
+            db.collection("alunos").document(ra_local).update({"nome": novo_nome.strip()})
+            st.success("Nome atualizado!")
+            obter_lista_alunos.clear()
+            st.rerun()
+
+
+# ----------------------------------------------------
+# Aba: Relatório
+# ----------------------------------------------------
+elif aba == "Relatório":
+    st.title("📊 Relatório de Notas")
+    alunos_dict = obter_lista_alunos()
+    if not alunos_dict:
+        st.warning("Nenhum aluno.")
+        st.stop()
+
+    aluno_sel = st.selectbox("Selecione o aluno:", list(alunos_dict.keys()), key="relatorio_aluno")
+    ra = alunos_dict[aluno_sel]
+    doc = db.collection("alunos").document(ra).get()
+    dados = doc.to_dict() or {}
+    trimestres = dados.get("trimestres", {})
+    if not trimestres:
+        st.info("Sem dados de notas.")
+        st.stop()
+
+    metricas = ["Business Drivers", "Funcionalidade", "Req Não Funcionais", "Engenharia", "Tecnologia"]
+    trimestres_ordenados = sorted(trimestres.items(), key=lambda x: x[0])
+    codigos = []
+    dados_por_met = {m: [] for m in metricas}
+
+    for cod, notas in trimestres_ordenados:
+        codigos.append(cod)
+        for m in metricas:
+            dados_por_met[m].append(notas.get(m, 0))
+
+    st.subheader("📌 Radar do Último Trimestre")
+    fig = go.Figure()
+    for cod, notas in trimestres_ordenados[:-1]:
+        valores = [notas.get(m, 0) for m in metricas]
+        fig.add_trace(go.Scatterpolar(r=valores + [valores[0]], theta=metricas + [metricas[0]], name=cod, opacity=0.3, fill='toself'))
+    ultimo_cod, ultimo_notas = trimestres_ordenados[-1]
+    fig.add_trace(go.Scatterpolar(
+        r=[ultimo_notas.get(m, 0) for m in metricas] + [ultimo_notas.get(metricas[0], 0)],
+        theta=metricas + [metricas[0]],
+        name=f"{ultimo_cod} (Último)",
         fill='toself',
-        opacity=0.3,
-        line=dict(width=1),
+        line=dict(width=3)
     ))
+    fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 10])))
+    st.plotly_chart(fig, use_container_width=True)
 
-fig_radar.add_trace(go.Scatterpolar(
-    r=valores_ultimo + [valores_ultimo[0]],
-    theta=listas_metricas + [listas_metricas[0]],
-    name=f"{ultimo_codigo} (Último)",
-    fill='toself',
-    opacity=0.9,
-    line=dict(width=3, color='red'),
-))
-
-fig_radar.update_layout(
-    polar=dict(radialaxis=dict(visible=True, range=[0, 10])),
-    showlegend=True,
-    legend=dict(title="Trimestres"),
-    title_text="Radar da Evolução Trimestral (último trimestre em destaque)"
-)
-
-st.plotly_chart(fig_radar, use_container_width=True)
-
-# ----------------------------------------------------
-# 9. Gráficos de Linha por Atributo
-# ----------------------------------------------------
-st.header("📈 Gráficos de Linha por Atributo")
-
-for met in listas_metricas:
-    st.subheader(f"{met} ao longo dos trimestres")
-    fig_linha = go.Figure(
-        data=go.Scatter(
-            x=lista_trimestres,
-            y=dados_por_met[met],
-            mode='lines+markers',
-            name=met,
-            line=dict(width=2),
-            marker=dict(size=6)
-        )
-    )
-
-    fig_linha.update_layout(
-        xaxis=dict(tickangle=45, tickfont=dict(size=10), automargin=True),
-        yaxis=dict(title=met, range=[0, 10]),
-        margin=dict(l=40, r=20, t=30, b=80),
-        height=350,
-        showlegend=False
-    )
-
-    st.plotly_chart(fig_linha, use_container_width=True)
+    st.subheader("📈 Gráficos por Métrica")
+    for m in metricas:
+        fig_linha = go.Figure()
+        fig_linha.add_trace(go.Scatter(x=codigos, y=dados_por_met[m], mode='lines+markers', name=m))
+        fig_linha.update_layout(title=m, yaxis=dict(range=[0, 10]))
+        st.plotly_chart(fig_linha, use_container_width=True)

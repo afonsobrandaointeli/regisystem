@@ -120,6 +120,7 @@ if "AlunoEncontrado" in st.session_state and st.session_state["AlunoEncontrado"]
             else:
                 doc_ref = db.collection("alunos").document(ra_para_cadastro)
                 doc_ref.set({"nome": nome_novo.strip(), "ra": ra_para_cadastro})
+                obter_lista_alunos.clear()  # <-- Limpa o cache aqui!
                 st.success(f"Aluno '{nome_novo.strip()}' cadastrado com sucesso!")
                 # Atualiza estado para edição imediatamente
                 st.session_state["AlunoEncontrado"] = True
